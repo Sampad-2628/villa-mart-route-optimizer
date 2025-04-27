@@ -3,9 +3,11 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import itertools
+import openrouteservice
+from openrouteservice import convert
 import os
 
-# === Show files in the directory for debugging (optional, can remove later) ===
+# Debug: See what files are present
 st.write("Files in app directory:", os.listdir())
 
 # === LOAD DISTANCE MATRIX CSV ===
@@ -17,7 +19,6 @@ except Exception as e:
     st.error(f"Error loading distance matrix: {e}")
     st.stop()
 
-# Store names and depot
 store_list = df_distance.index.tolist()
 depot = store_list[-1]
 
@@ -35,7 +36,10 @@ coords_dict = {
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 
-st.title("Bhubaneswar Route Optimizer (Persistent Output)")
+ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
+ors_client = openrouteservice.Client(key=ORS_API_KEY)
+
+st.title("Bhubaneswar Route Optimizer (With Real Road Geometry)")
 st.markdown("""
 **Instructions:**  
 1. Enter crate demand for each dark store.  
@@ -69,7 +73,7 @@ if run_optim:
     try:
         if total_crates == 0:
             st.error("Total crate demand is zero. Please enter demand for at least one store.")
-            st.session_state['last_results'] = None  # Clear previous results
+            st.session_state['last_results'] = None
             st.stop()
 
         if df_distance.isnull().values.any():
@@ -201,7 +205,7 @@ if run_optim:
             # Save to session state
             st.session_state['last_results'] = {
                 "df": df_result,
-                "trip_data": results  # Keep raw data if you want for future
+                "trip_data": results
             }
     except Exception as ex:
         st.error(f"An unexpected error occurred: {ex}")
@@ -215,7 +219,7 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
         st.header("Optimized Trip Plan")
         st.dataframe(df_last)
 
-        # --- Route Visualization ---
+        # --- Route Visualization With Real Road Geometry ---
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
         color_cycle = [
             'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
@@ -225,19 +229,37 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
             color = color_cycle[idx % len(color_cycle)]
             route = [depot] + list(row["stores"]) + [depot]
             route_coords = [coords_dict[pt] for pt in route]
-            folium.PolyLine(
-                locations=[c[::-1] for c in route_coords],
-                color=color, weight=5, opacity=0.7, tooltip=f"{row['truck']}"
-            ).add_to(m)
+            # Query real route geometry from ORS
+            try:
+                if len(route_coords) > 1:
+                    response = ors_client.directions(
+                        coordinates=route_coords,
+                        profile='driving-hgv',
+                        format='geojson'
+                    )
+                    geometry = response['features'][0]['geometry']
+                    folium.GeoJson(
+                        geometry,
+                        name=f"{row['truck']}",
+                        style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.7}
+                    ).add_to(m)
+                else:
+                    folium.CircleMarker(
+                        location=route_coords[0][::-1],
+                        radius=6, color=color, fill=True, popup=route[0]
+                    ).add_to(m)
+            except Exception as ex:
+                st.warning(f"Failed to plot real route for {row['truck']}: {ex}")
+
+            # Plot markers for stops as before
             for pt in route:
                 folium.CircleMarker(
                     location=coords_dict[pt][::-1],
                     radius=6, color=color, fill=True, popup=pt
                 ).add_to(m)
-        st.subheader("Route Visualization")
+        st.subheader("Route Visualization (By Road)")
         st_folium(m, width=800, height=600)
     else:
         st.warning("No results to show. Please optimize again with new input.")
 else:
     st.info("Enter input and click 'Optimize Route' to show results.")
-

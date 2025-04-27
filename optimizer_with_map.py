@@ -28,10 +28,10 @@ coords_dict = {
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 
-ORS_API_KEY = 'YOUR_ORS_KEY'
+ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Villa Mart Route & Cost Optimizer (Efficient VRP + Session State)")
+st.title("Villa Mart Route & Cost Optimizer (Prioritize Own Trucks, Trip Labelling, Robust Output)")
 
 # --- INPUTS ---
 st.header("Enter Crate Demand for Each Store")
@@ -59,11 +59,14 @@ run_optim = st.button("Optimize Route")
 def create_data_model():
     demands = [0] + [user_crate_demand[s] for s in store_list[:-1]]  # depot first
     vehicles = []
+    truck_trip_labels = []
     for t in own_trucks:
         for i in range(t["max_trips"]):
-            vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"]})
+            vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"], "trip": i+1})
+            truck_trip_labels.append(f"{t['name']} - Trip {i+1}")
     for i in range(max_rented_trips):
-        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity})
+        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
+        truck_trip_labels.append(f"Rented-{i+1}")
     time_windows = [(0, 240)] * len(store_list)
     service_times = [0] + [30 for _ in store_list[:-1]]
     distance_matrix = []
@@ -88,12 +91,17 @@ def create_data_model():
         "avg_speed": avg_speed,
         "petrol_price": petrol_price,
         "mileage": mileage,
+        "truck_trip_labels": truck_trip_labels,
     }
     return data
 
 def solve_vrp(data):
     manager = pywrapcp.RoutingIndexManager(len(data['distance_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
+    # Add big fixed cost for rented vehicles so own trucks are prioritized
+    for vehicle_id, v in enumerate(data['vehicles']):
+        if v['type'] == 'rented':
+            routing.SetFixedCostOfVehicle(100000, vehicle_id)  # <<=== key line to prioritize own trucks
     def distance_callback(from_idx, to_idx):
         from_node = manager.IndexToNode(from_idx)
         to_node = manager.IndexToNode(to_idx)
@@ -137,6 +145,7 @@ def solve_vrp(data):
                     "route": stops,
                     "load": total_load,
                     "distance": trip_km,
+                    "label": data["truck_trip_labels"][vehicle_id]
                 })
     return trips
 
@@ -150,10 +159,11 @@ if run_optim:
         rent_cost = 2300 if is_rented and trip["distance"] > 30 else 1500 if is_rented else 0
         fuel_cost = (trip["distance"] / mileage) * petrol_price if not is_rented else 0
         total_cost = fuel_cost + rent_cost
-        # route string as "1-Kanan Vihar (21) -> 2-RTO (34)"
         route_str = " -> ".join([f"{i+1}-{s} ({user_crate_demand.get(s, 0)})" for i, s in enumerate(trip["route"])])
         output.append({
             "truck": v["name"],
+            "trip": v.get("trip", 1),
+            "label": trip.get("label", f"{v['name']} - Trip {v.get('trip',1)}"),
             "type": v["type"],
             "route": route_str,
             "load": trip["load"],
@@ -166,7 +176,7 @@ if run_optim:
     st.session_state['vrp_df_output'] = df_output
     st.session_state['vrp_trips'] = trips
     st.session_state['vrp_output_data'] = output
-    st.session_state['vrp_trip_names'] = [f"{o['truck']}" for o in output] if output else []
+    st.session_state['vrp_trip_labels'] = [o['label'] for o in output] if output else []
 
 # Now display last results (if present)
 if (
@@ -177,13 +187,13 @@ if (
     df_output = st.session_state['vrp_df_output']
     trips = st.session_state['vrp_trips']
     output = st.session_state['vrp_output_data']
-    trip_names = st.session_state['vrp_trip_names']
+    trip_labels = st.session_state['vrp_trip_labels']
 
     st.header("Optimized Trip Plan (OR-Tools Robust)")
     st.dataframe(df_output)
     if len(output) > 0:
-        selected_trip = st.selectbox("Select truck to show its route:", trip_names)
-        idx = trip_names.index(selected_trip)
+        selected_trip_label = st.selectbox("Select truck/trip to show its route:", trip_labels)
+        idx = trip_labels.index(selected_trip_label)
         selected_stores = [depot] + trips[idx]["route"] + [depot]
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
         route_coords = [coords_dict[pt] for pt in selected_stores]
@@ -197,7 +207,7 @@ if (
                 geometry = response['features'][0]['geometry']
                 folium.GeoJson(
                     geometry,
-                    name=f"{selected_trip}",
+                    name=f"{selected_trip_label}",
                     style_function=lambda x: {'color': 'blue', 'weight': 6, 'opacity': 0.85}
                 ).add_to(m)
             else:
@@ -206,13 +216,13 @@ if (
                     radius=7, color="blue", fill=True, popup=selected_stores[0]
                 ).add_to(m)
         except Exception as ex:
-            st.warning(f"Failed to plot real route for {selected_trip}: {ex}")
+            st.warning(f"Failed to plot real route for {selected_trip_label}: {ex}")
         for pt in selected_stores:
             folium.CircleMarker(
                 location=coords_dict[pt][::-1],
                 radius=10, color='blue', fill=True, popup=pt
             ).add_to(m)
-        st.subheader(f"Route Visualization (Truck: {selected_trip})")
+        st.subheader(f"Route Visualization ({selected_trip_label})")
         st_folium(m, width=800, height=600)
 else:
     st.info("Enter demand and click Optimize to run.")

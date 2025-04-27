@@ -6,9 +6,6 @@ import itertools
 import openrouteservice
 import os
 
-# Debug: Show files in app directory
-st.write("Files in app directory:", os.listdir())
-
 # === LOAD DISTANCE MATRIX CSV ===
 try:
     df_distance = pd.read_csv("bhubaneswar_truck_distance_matrix.csv", index_col=0)
@@ -38,13 +35,14 @@ coords_dict = {
 ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Bhubaneswar Route Optimizer (Numbered Stops, Real Roads)")
+st.title("Bhubaneswar Route Optimizer (Truck/Trip Selector, Route/Crate Output)")
+
 st.markdown("""
 **Instructions:**  
 1. Enter crate demand for each dark store.  
 2. Set your truck and route constraints.  
 3. Click "Optimize Route" to view optimal trip plan and routes.  
-4. Results remain until you click "Optimize Route" again!
+4. Use the dropdown to select a truck/trip and see only its route on the map!
 """)
 
 # -- UI Inputs --
@@ -151,7 +149,10 @@ if run_optim:
 
         # --- Optimize Each Trip's Route (TSP or Greedy) ---
         results = []
+        route_details_for_map = []
         for trip in trip_plan:
+            # Prepare a dict to map store to crate for this trip
+            store_to_crate = dict(trip["route_stores"])
             route_stores = [store for store, _ in trip["route_stores"]]
             route_stores = list(set(route_stores))  # Deduplicate
             if not route_stores:
@@ -186,25 +187,42 @@ if run_optim:
             wait_time = 30 * len(route_stores)  # 30 min per store
             total_time = int(drive_time + wait_time)
             cost = 0 if trip["truck_type"] == "own" else (2300 if min_dist > 30 else 1500)
+
+            # Prepare route string for table: 1-Bomikhal (crates), 2-RTO (crates), ...
+            route_ordered = []
+            for stop_num, stop_name in enumerate(best_order, 1):
+                crates = store_to_crate.get(stop_name, 0)
+                route_ordered.append(f"{stop_num}-{stop_name} ({crates})")
+            route_str = " -> ".join(route_ordered)
+
+            # Save details for map
+            route_details_for_map.append({
+                "truck": trip["truck"],
+                "trip_num": trip["trip_num"],
+                "truck_type": trip["truck_type"],
+                "route_stores": best_order,
+                "store_to_crate": store_to_crate
+            })
+
             results.append({
                 "truck": trip["truck"],
                 "trip_num": trip["trip_num"],
                 "truck_type": trip["truck_type"],
-                "stores": best_order,
+                "route": route_str,
                 "load": trip["load"],
                 "distance": round(min_dist, 2),
                 "total_time_min": total_time,
                 "cost": cost
             })
+
         df_result = pd.DataFrame(results)
         if df_result.empty:
             st.warning("No routes generated. Please check your input values.")
             st.session_state['last_results'] = None
         else:
-            # Save to session state
             st.session_state['last_results'] = {
                 "df": df_result,
-                "trip_data": results
+                "route_details_for_map": route_details_for_map
             }
     except Exception as ex:
         st.error(f"An unexpected error occurred: {ex}")
@@ -214,57 +232,74 @@ if run_optim:
 # --- Show output if present in session state ---
 if 'last_results' in st.session_state and st.session_state['last_results'] is not None:
     df_last = st.session_state['last_results']['df']
+    route_details_for_map = st.session_state['last_results']['route_details_for_map']
     if not df_last.empty:
+
         st.header("Optimized Trip Plan")
         st.dataframe(df_last)
 
-        # --- Route Visualization With Numbered Stops and Real Road Geometry ---
+        # Dropdown to select which trip/truck route to view
+        truck_trip_options = [
+            f"{d['truck']} - Trip {d['trip_num']}" for d in route_details_for_map
+        ]
+        selected_idx = 0
+        if len(truck_trip_options) > 1:
+            selected_idx = st.selectbox(
+                "Select a Truck/Trip to view its route:",
+                options=list(range(len(truck_trip_options))),
+                format_func=lambda x: truck_trip_options[x],
+            )
+        selected_trip = route_details_for_map[selected_idx]
+
+        # --- Route Visualization For Selected Truck/Trip Only ---
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
         color_cycle = [
             'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
             'lightblue', 'gray', 'pink', 'black'
         ]
-        for idx, row in df_last.iterrows():
-            color = color_cycle[idx % len(color_cycle)]
-            route = [depot] + list(row["stores"]) + [depot]
-            route_coords = [coords_dict[pt] for pt in route]
-
-            # Query real route geometry from ORS
-            try:
-                if len(route_coords) > 1:
-                    response = ors_client.directions(
-                        coordinates=route_coords,
-                        profile='driving-hgv',
-                        format='geojson'
-                    )
-                    geometry = response['features'][0]['geometry']
-                    folium.GeoJson(
-                        geometry,
-                        name=f"{row['truck']}",
-                        style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.7}
-                    ).add_to(m)
-                else:
-                    folium.CircleMarker(
-                        location=route_coords[0][::-1],
-                        radius=6, color=color, fill=True, popup=route[0]
-                    ).add_to(m)
-            except Exception as ex:
-                st.warning(f"Failed to plot real route for {row['truck']}: {ex}")
-
-            # Plot numbered markers for each stop
-            for stop_num, pt in enumerate(route):
+        color = color_cycle[selected_idx % len(color_cycle)]
+        # Prepare route: depot -> stops in order -> depot
+        route = [depot] + list(selected_trip["route_stores"]) + [depot]
+        route_coords = [coords_dict[pt] for pt in route]
+        # Query real route geometry from ORS
+        try:
+            if len(route_coords) > 1:
+                response = ors_client.directions(
+                    coordinates=route_coords,
+                    profile='driving-hgv',
+                    format='geojson'
+                )
+                geometry = response['features'][0]['geometry']
+                folium.GeoJson(
+                    geometry,
+                    name=f"{selected_trip['truck']}",
+                    style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.8}
+                ).add_to(m)
+            else:
                 folium.CircleMarker(
-                    location=coords_dict[pt][::-1],
-                    radius=8, color=color, fill=True, popup=f"{stop_num+1}: {pt}",
-                    tooltip=f"{stop_num+1}. {pt}"
+                    location=route_coords[0][::-1],
+                    radius=7, color=color, fill=True, popup=route[0]
                 ).add_to(m)
-                # Add a number as a visible label on the marker
-                folium.map.Marker(
-                    coords_dict[pt][::-1],
-                    icon=folium.DivIcon(html=f"""<div style="font-size: 14pt; color : {color};"><b>{stop_num+1}</b></div>""")
-                ).add_to(m)
+        except Exception as ex:
+            st.warning(f"Failed to plot real route for {selected_trip['truck']}: {ex}")
 
-        st.subheader("Route Visualization (By Road, Numbered Stops)")
+        # Plot markers for stops with crate info
+        for stop_num, pt in enumerate(route):
+            crate_val = ""
+            if stop_num != 0 and stop_num != len(route)-1:
+                crate_val = f"({selected_trip['store_to_crate'].get(pt, 0)} crates)"
+            popup_str = f"{stop_num+1}: {pt} {crate_val}"
+            tooltip_str = f"{stop_num+1}. {pt} {crate_val}"
+            folium.CircleMarker(
+                location=coords_dict[pt][::-1],
+                radius=8, color=color, fill=True, popup=popup_str, tooltip=tooltip_str
+            ).add_to(m)
+            folium.map.Marker(
+                coords_dict[pt][::-1],
+                icon=folium.DivIcon(html=f"""<div style="font-size: 14pt; color : {color};"><b>{stop_num+1}</b></div>""")
+            ).add_to(m)
+
+        st.subheader(f"Route Visualization (Truck: {selected_trip['truck']}, Trip: {selected_trip['trip_num']})")
         st_folium(m, width=800, height=600)
     else:
         st.warning("No results to show. Please optimize again with new input.")

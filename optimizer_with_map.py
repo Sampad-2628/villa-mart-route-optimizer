@@ -31,7 +31,7 @@ coords_dict = {
 ORS_API_KEY = 'YOUR_ORS_KEY'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Villa Mart Optimal Route & Cost Optimizer (Robust VRP, OR-Tools)")
+st.title("Villa Mart Route & Cost Optimizer (Efficient VRP + Session State)")
 
 # --- INPUTS ---
 st.header("Enter Crate Demand for Each Store")
@@ -58,17 +58,14 @@ run_optim = st.button("Optimize Route")
 # ======== OR-TOOLS VRP LOGIC =========
 def create_data_model():
     demands = [0] + [user_crate_demand[s] for s in store_list[:-1]]  # depot first
-    # Each trip = one vehicle in VRP
     vehicles = []
     for t in own_trucks:
         for i in range(t["max_trips"]):
             vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"]})
     for i in range(max_rented_trips):
         vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity})
-    # Time windows and service times (optional, for now set to full window)
     time_windows = [(0, 240)] * len(store_list)
     service_times = [0] + [30 for _ in store_list[:-1]]
-    # Build distance matrix in minutes (for routing cost, also for fuel)
     distance_matrix = []
     for from_store in store_list:
         row = []
@@ -97,21 +94,18 @@ def create_data_model():
 def solve_vrp(data):
     manager = pywrapcp.RoutingIndexManager(len(data['distance_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
-    # Distance callback
     def distance_callback(from_idx, to_idx):
         from_node = manager.IndexToNode(from_idx)
         to_node = manager.IndexToNode(to_idx)
         return data['distance_matrix'][from_node][to_node]
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-    # Capacity
     def demand_callback(from_idx):
         from_node = manager.IndexToNode(from_idx)
         return data['demands'][from_node]
     demand_callback_idx = routing.RegisterUnaryTransitCallback(demand_callback)
     routing.AddDimensionWithVehicleCapacity(
         demand_callback_idx, 0, data['vehicle_capacities'], True, 'Capacity')
-    # Solve
     search_params = pywrapcp.DefaultRoutingSearchParameters()
     search_params.time_limit.seconds = 30
     search_params.first_solution_strategy = (
@@ -119,7 +113,6 @@ def solve_vrp(data):
     search_params.local_search_metaheuristic = (
         routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
     solution = routing.SolveWithParameters(search_params)
-    # Parse output
     trips = []
     if solution:
         for vehicle_id in range(data['num_vehicles']):
@@ -157,6 +150,7 @@ if run_optim:
         rent_cost = 2300 if is_rented and trip["distance"] > 30 else 1500 if is_rented else 0
         fuel_cost = (trip["distance"] / mileage) * petrol_price if not is_rented else 0
         total_cost = fuel_cost + rent_cost
+        # route string as "1-Kanan Vihar (21) -> 2-RTO (34)"
         route_str = " -> ".join([f"{i+1}-{s} ({user_crate_demand.get(s, 0)})" for i, s in enumerate(trip["route"])])
         output.append({
             "truck": v["name"],
@@ -169,44 +163,57 @@ if run_optim:
             "total_cost": round(total_cost, 2),
         })
     df_output = pd.DataFrame(output)
-    if not df_output.empty:
-        st.header("Optimized Trip Plan (OR-Tools Robust)")
-        st.dataframe(df_output)
-        if len(output) > 0:
-            trip_names = [f"{o['truck']}" for o in output]
-            selected_trip = st.selectbox("Select truck to show its route:", trip_names)
-            idx = trip_names.index(selected_trip)
-            selected_stores = [depot] + trips[idx]["route"] + [depot]
-            m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
-            route_coords = [coords_dict[pt] for pt in selected_stores]
-            try:
-                if len(route_coords) > 1:
-                    response = ors_client.directions(
-                        coordinates=route_coords,
-                        profile='driving-hgv',
-                        format='geojson'
-                    )
-                    geometry = response['features'][0]['geometry']
-                    folium.GeoJson(
-                        geometry,
-                        name=f"{selected_trip}",
-                        style_function=lambda x: {'color': 'blue', 'weight': 6, 'opacity': 0.85}
-                    ).add_to(m)
-                else:
-                    folium.CircleMarker(
-                        location=route_coords[0][::-1],
-                        radius=7, color="blue", fill=True, popup=selected_stores[0]
-                    ).add_to(m)
-            except Exception as ex:
-                st.warning(f"Failed to plot real route for {selected_trip}: {ex}")
-            for pt in selected_stores:
-                folium.CircleMarker(
-                    location=coords_dict[pt][::-1],
-                    radius=10, color='blue', fill=True, popup=pt
+    st.session_state['vrp_df_output'] = df_output
+    st.session_state['vrp_trips'] = trips
+    st.session_state['vrp_output_data'] = output
+    st.session_state['vrp_trip_names'] = [f"{o['truck']}" for o in output] if output else []
+
+# Now display last results (if present)
+if (
+    'vrp_df_output' in st.session_state
+    and st.session_state['vrp_df_output'] is not None
+    and not st.session_state['vrp_df_output'].empty
+):
+    df_output = st.session_state['vrp_df_output']
+    trips = st.session_state['vrp_trips']
+    output = st.session_state['vrp_output_data']
+    trip_names = st.session_state['vrp_trip_names']
+
+    st.header("Optimized Trip Plan (OR-Tools Robust)")
+    st.dataframe(df_output)
+    if len(output) > 0:
+        selected_trip = st.selectbox("Select truck to show its route:", trip_names)
+        idx = trip_names.index(selected_trip)
+        selected_stores = [depot] + trips[idx]["route"] + [depot]
+        m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
+        route_coords = [coords_dict[pt] for pt in selected_stores]
+        try:
+            if len(route_coords) > 1:
+                response = ors_client.directions(
+                    coordinates=route_coords,
+                    profile='driving-hgv',
+                    format='geojson'
+                )
+                geometry = response['features'][0]['geometry']
+                folium.GeoJson(
+                    geometry,
+                    name=f"{selected_trip}",
+                    style_function=lambda x: {'color': 'blue', 'weight': 6, 'opacity': 0.85}
                 ).add_to(m)
-            st.subheader(f"Route Visualization (Truck: {selected_trip})")
-            st_folium(m, width=800, height=600)
-    else:
-        st.warning("No routes found. Please check your input.")
+            else:
+                folium.CircleMarker(
+                    location=route_coords[0][::-1],
+                    radius=7, color="blue", fill=True, popup=selected_stores[0]
+                ).add_to(m)
+        except Exception as ex:
+            st.warning(f"Failed to plot real route for {selected_trip}: {ex}")
+        for pt in selected_stores:
+            folium.CircleMarker(
+                location=coords_dict[pt][::-1],
+                radius=10, color='blue', fill=True, popup=pt
+            ).add_to(m)
+        st.subheader(f"Route Visualization (Truck: {selected_trip})")
+        st_folium(m, width=800, height=600)
 else:
     st.info("Enter demand and click Optimize to run.")
+

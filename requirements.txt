@@ -1,5 +1,8 @@
 streamlit
 pandas
+numpy
 folium
 streamlit-folium
 openrouteservice
+scikit-learn
+ortools

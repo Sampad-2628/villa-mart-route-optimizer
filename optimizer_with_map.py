@@ -4,9 +4,8 @@ import folium
 from streamlit_folium import st_folium
 import itertools
 import openrouteservice
-import os
 
-# === LOAD DISTANCE MATRIX CSV ===
+# --- Load Distance Matrix ---
 try:
     df_distance = pd.read_csv("bhubaneswar_truck_distance_matrix.csv", index_col=0)
     df_distance.index = df_distance.index.str.strip()
@@ -35,17 +34,18 @@ coords_dict = {
 ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Bhubaneswar Route Optimizer (Truck/Trip Selector, Route/Crate Output)")
+st.title("Bhubaneswar Route Optimizer (Per-Trip Map & Table, No Map Numbering)")
 
 st.markdown("""
 **Instructions:**  
-1. Enter crate demand for each dark store.  
-2. Set your truck and route constraints.  
-3. Click "Optimize Route" to view optimal trip plan and routes.  
-4. Use the dropdown to select a truck/trip and see only its route on the map!
+- Enter crate demand for each dark store  
+- Set truck constraints  
+- Click **Optimize Route**  
+- Use the dropdown to view each trip’s exact route  
+- Map shows only one trip at a time; markers show store names  
 """)
 
-# -- UI Inputs --
+# ---- Inputs ----
 st.header("Step 1: Enter Crate Demand for Each Store")
 user_crate_demand = {}
 total_crates = 0
@@ -65,7 +65,7 @@ avg_speed = st.number_input("Average truck speed (km/hr)", min_value=30, max_val
 
 run_optim = st.button("Optimize Route")
 
-# --- If user clicks the button, compute and save to session_state ---
+# --- Optimizer Logic and Trip Assignment ---
 if run_optim:
     try:
         if total_crates == 0:
@@ -80,7 +80,7 @@ if run_optim:
 
         remaining_demand = user_crate_demand.copy()
         trip_plan = []
-        # --- Assign Own Trucks ---
+        # Own Trucks First
         for truck in our_trucks:
             for t in range(truck["max_trips"]):
                 load = 0
@@ -104,7 +104,7 @@ if run_optim:
                         "route_stores": stores_this_trip,
                         "load": load
                     })
-        # --- Assign Rented Trucks ---
+        # Rented Trucks as Needed
         max_rented_trips = 100
         rented_trip_count = 0
         while sum(remaining_demand.values()) > 0:
@@ -149,9 +149,8 @@ if run_optim:
 
         # --- Optimize Each Trip's Route (TSP or Greedy) ---
         results = []
-        route_details_for_map = []
+        trip_details = []
         for trip in trip_plan:
-            # Prepare a dict to map store to crate for this trip
             store_to_crate = dict(trip["route_stores"])
             route_stores = [store for store, _ in trip["route_stores"]]
             route_stores = list(set(route_stores))  # Deduplicate
@@ -188,19 +187,17 @@ if run_optim:
             total_time = int(drive_time + wait_time)
             cost = 0 if trip["truck_type"] == "own" else (2300 if min_dist > 30 else 1500)
 
-            # Prepare route string for table: 1-Bomikhal (crates), 2-RTO (crates), ...
+            # Prepare route string for table: 1-Kanan Vihar (21) -> 2-RTO (34) ...
             route_ordered = []
             for stop_num, stop_name in enumerate(best_order, 1):
                 crates = store_to_crate.get(stop_name, 0)
                 route_ordered.append(f"{stop_num}-{stop_name} ({crates})")
             route_str = " -> ".join(route_ordered)
 
-            # Save details for map
-            route_details_for_map.append({
+            trip_details.append({
                 "truck": trip["truck"],
                 "trip_num": trip["trip_num"],
-                "truck_type": trip["truck_type"],
-                "route_stores": best_order,
+                "route_stores": list(best_order),
                 "store_to_crate": store_to_crate
             })
 
@@ -222,7 +219,7 @@ if run_optim:
         else:
             st.session_state['last_results'] = {
                 "df": df_result,
-                "route_details_for_map": route_details_for_map
+                "trip_details": trip_details
             }
     except Exception as ex:
         st.error(f"An unexpected error occurred: {ex}")
@@ -232,36 +229,30 @@ if run_optim:
 # --- Show output if present in session state ---
 if 'last_results' in st.session_state and st.session_state['last_results'] is not None:
     df_last = st.session_state['last_results']['df']
-    route_details_for_map = st.session_state['last_results']['route_details_for_map']
+    trip_details = st.session_state['last_results']['trip_details']
     if not df_last.empty:
-
         st.header("Optimized Trip Plan")
         st.dataframe(df_last)
 
-        # Dropdown to select which trip/truck route to view
-        truck_trip_options = [
-            f"{d['truck']} - Trip {d['trip_num']}" for d in route_details_for_map
+        # Dropdown for selecting truck/trip
+        trip_names = [
+            f"{d['truck']} Trip {d['trip_num']}" for d in trip_details
         ]
         selected_idx = 0
-        if len(truck_trip_options) > 1:
+        if len(trip_names) > 1:
             selected_idx = st.selectbox(
-                "Select a Truck/Trip to view its route:",
-                options=list(range(len(truck_trip_options))),
-                format_func=lambda x: truck_trip_options[x],
+                "Select truck/trip to show its route on the map:",
+                options=list(range(len(trip_names))),
+                format_func=lambda x: trip_names[x]
             )
-        selected_trip = route_details_for_map[selected_idx]
+        selected_trip = trip_details[selected_idx]
 
-        # --- Route Visualization For Selected Truck/Trip Only ---
+        # --- Route Visualization for selected trip only ---
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
-        color_cycle = [
-            'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
-            'lightblue', 'gray', 'pink', 'black'
-        ]
-        color = color_cycle[selected_idx % len(color_cycle)]
-        # Prepare route: depot -> stops in order -> depot
-        route = [depot] + list(selected_trip["route_stores"]) + [depot]
+        color = 'blue'
+        route = [depot] + selected_trip["route_stores"] + [depot]
         route_coords = [coords_dict[pt] for pt in route]
-        # Query real route geometry from ORS
+        # Query ORS for route geometry
         try:
             if len(route_coords) > 1:
                 response = ors_client.directions(
@@ -273,7 +264,7 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
                 folium.GeoJson(
                     geometry,
                     name=f"{selected_trip['truck']}",
-                    style_function=lambda x, color=color: {'color': color, 'weight': 5, 'opacity': 0.8}
+                    style_function=lambda x, color=color: {'color': color, 'weight': 6, 'opacity': 0.85}
                 ).add_to(m)
             else:
                 folium.CircleMarker(
@@ -283,22 +274,17 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
         except Exception as ex:
             st.warning(f"Failed to plot real route for {selected_trip['truck']}: {ex}")
 
-        # Plot markers for stops with crate info
-        for stop_num, pt in enumerate(route):
+        # Plot markers for stops with store names (not numbers)
+        for pt in route:
             crate_val = ""
-            if stop_num != 0 and stop_num != len(route)-1:
+            if pt != depot:
                 crate_val = f"({selected_trip['store_to_crate'].get(pt, 0)} crates)"
-            popup_str = f"{stop_num+1}: {pt} {crate_val}"
-            tooltip_str = f"{stop_num+1}. {pt} {crate_val}"
+            popup_str = f"{pt} {crate_val}".strip()
+            tooltip_str = popup_str
             folium.CircleMarker(
                 location=coords_dict[pt][::-1],
-                radius=8, color=color, fill=True, popup=popup_str, tooltip=tooltip_str
+                radius=10, color=color, fill=True, popup=popup_str, tooltip=tooltip_str
             ).add_to(m)
-            folium.map.Marker(
-                coords_dict[pt][::-1],
-                icon=folium.DivIcon(html=f"""<div style="font-size: 14pt; color : {color};"><b>{stop_num+1}</b></div>""")
-            ).add_to(m)
-
         st.subheader(f"Route Visualization (Truck: {selected_trip['truck']}, Trip: {selected_trip['trip_num']})")
         st_folium(m, width=800, height=600)
     else:

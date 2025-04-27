@@ -3,10 +3,13 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import itertools
+import os
+
+# === Show files in the directory for debugging (optional, can remove later) ===
+st.write("Files in app directory:", os.listdir())
 
 # === LOAD DISTANCE MATRIX CSV ===
 try:
-    # Strip all whitespace from names (prevents lookup bugs)
     df_distance = pd.read_csv("bhubaneswar_truck_distance_matrix.csv", index_col=0)
     df_distance.index = df_distance.index.str.strip()
     df_distance.columns = df_distance.columns.str.strip()
@@ -32,13 +35,13 @@ coords_dict = {
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 
-# --- Streamlit Interface ---
-st.title("Bhubaneswar Route Optimizer (Robust & Safe Version)")
+st.title("Bhubaneswar Route Optimizer (Persistent Output)")
 st.markdown("""
 **Instructions:**  
 1. Enter crate demand for each dark store.  
 2. Set your truck and route constraints.  
-3. Click "Optimize Route" to view optimal trip plan and routes.
+3. Click "Optimize Route" to view optimal trip plan and routes.  
+4. Results remain until you click "Optimize Route" again!
 """)
 
 # -- UI Inputs --
@@ -59,14 +62,19 @@ our_trucks = [
 rent_capacity = st.number_input("Rented truck capacity (crates)", min_value=70, max_value=200, value=121)
 avg_speed = st.number_input("Average truck speed (km/hr)", min_value=30, max_value=100, value=60)
 
-if st.button("Optimize Route"):
+run_optim = st.button("Optimize Route")
+
+# --- If user clicks the button, compute and save to session_state ---
+if run_optim:
     try:
         if total_crates == 0:
             st.error("Total crate demand is zero. Please enter demand for at least one store.")
+            st.session_state['last_results'] = None  # Clear previous results
             st.stop()
 
         if df_distance.isnull().values.any():
             st.error("Distance matrix contains missing values. Please check your CSV file.")
+            st.session_state['last_results'] = None
             st.stop()
 
         remaining_demand = user_crate_demand.copy()
@@ -76,7 +84,6 @@ if st.button("Optimize Route"):
             for t in range(truck["max_trips"]):
                 load = 0
                 stores_this_trip = []
-                # Assign stores with highest remaining demand first
                 for store, crates in sorted(remaining_demand.items(), key=lambda x: -x[1]):
                     if crates == 0:
                         continue
@@ -110,6 +117,7 @@ if st.button("Optimize Route"):
                         f"Store '{store}' crate demand ({crates}) exceeds rented truck capacity ({rent_capacity})."
                         " Split the demand or increase rented truck capacity."
                     )
+                    st.session_state['last_results'] = None
                     st.stop()
                 can_assign = min(crates, rent_capacity - trip_load)
                 if can_assign > 0:
@@ -131,9 +139,11 @@ if st.button("Optimize Route"):
             else:
                 st.error("Infinite loop detected: cannot allocate crates to rented trucks. "
                          "Check your demand/capacity settings.")
+                st.session_state['last_results'] = None
                 st.stop()
             if rented_trip_count > max_rented_trips:
                 st.error("Exceeded maximum allowed rented truck trips (possible infinite loop).")
+                st.session_state['last_results'] = None
                 st.stop()
 
         # --- Optimize Each Trip's Route (TSP or Greedy) ---
@@ -186,42 +196,48 @@ if st.button("Optimize Route"):
         df_result = pd.DataFrame(results)
         if df_result.empty:
             st.warning("No routes generated. Please check your input values.")
+            st.session_state['last_results'] = None
         else:
-            st.header("Optimized Trip Plan")
-            st.dataframe(df_result)
-
-            # --- Route Visualization ---
-            m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
-            color_cycle = [
-                'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
-                'lightblue', 'gray', 'pink', 'black'
-            ]
-            for idx, row in df_result.iterrows():
-                color = color_cycle[idx % len(color_cycle)]
-                route = [depot] + list(row["stores"]) + [depot]
-                route_coords = [coords_dict[pt] for pt in route]
-                folium.PolyLine(
-                    locations=[c[::-1] for c in route_coords],
-                    color=color, weight=5, opacity=0.7, tooltip=f"{row['truck']}"
-                ).add_to(m)
-                for pt in route:
-                    folium.CircleMarker(
-                        location=coords_dict[pt][::-1],
-                        radius=6, color=color, fill=True, popup=pt
-                    ).add_to(m)
-            st.subheader("Route Visualization")
-            st_folium(m, width=800, height=600)
-
+            # Save to session state
+            st.session_state['last_results'] = {
+                "df": df_result,
+                "trip_data": results  # Keep raw data if you want for future
+            }
     except Exception as ex:
         st.error(f"An unexpected error occurred: {ex}")
+        st.session_state['last_results'] = None
         st.stop()
 
-# ---- LOGIC (in plain English, outside the code block) ----
+# --- Show output if present in session state ---
+if 'last_results' in st.session_state and st.session_state['last_results'] is not None:
+    df_last = st.session_state['last_results']['df']
+    if not df_last.empty:
+        st.header("Optimized Trip Plan")
+        st.dataframe(df_last)
 
-# LOGIC EXPLANATION:
-# 1. User enters crate demand and truck constraints.
-# 2. Code assigns crates to own trucks first (using capacity and trips), then rented trucks (with protection against infinite loop).
-# 3. Each trip's stops are optimized using brute-force TSP if <=7 stops, or greedy nearest neighbor otherwise.
-# 4. The app outputs a DataFrame of all trips (truck, stops, distance, time, cost) and plots the routes on a map.
-# 5. Robust error handling is provided for all possible bad inputs or data issues.
+        # --- Route Visualization ---
+        m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
+        color_cycle = [
+            'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
+            'lightblue', 'gray', 'pink', 'black'
+        ]
+        for idx, row in df_last.iterrows():
+            color = color_cycle[idx % len(color_cycle)]
+            route = [depot] + list(row["stores"]) + [depot]
+            route_coords = [coords_dict[pt] for pt in route]
+            folium.PolyLine(
+                locations=[c[::-1] for c in route_coords],
+                color=color, weight=5, opacity=0.7, tooltip=f"{row['truck']}"
+            ).add_to(m)
+            for pt in route:
+                folium.CircleMarker(
+                    location=coords_dict[pt][::-1],
+                    radius=6, color=color, fill=True, popup=pt
+                ).add_to(m)
+        st.subheader("Route Visualization")
+        st_folium(m, width=800, height=600)
+    else:
+        st.warning("No results to show. Please optimize again with new input.")
+else:
+    st.info("Enter input and click 'Optimize Route' to show results.")
 

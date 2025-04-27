@@ -4,10 +4,9 @@ import folium
 from streamlit_folium import st_folium
 import itertools
 import openrouteservice
-from openrouteservice import convert
 import os
 
-# Debug: See what files are present
+# Debug: Show files in app directory
 st.write("Files in app directory:", os.listdir())
 
 # === LOAD DISTANCE MATRIX CSV ===
@@ -39,7 +38,7 @@ coords_dict = {
 ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Bhubaneswar Route Optimizer (With Real Road Geometry)")
+st.title("Bhubaneswar Route Optimizer (Numbered Stops, Real Roads)")
 st.markdown("""
 **Instructions:**  
 1. Enter crate demand for each dark store.  
@@ -219,7 +218,7 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
         st.header("Optimized Trip Plan")
         st.dataframe(df_last)
 
-        # --- Route Visualization With Real Road Geometry ---
+        # --- Route Visualization With Numbered Stops and Real Road Geometry ---
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
         color_cycle = [
             'blue', 'red', 'green', 'purple', 'orange', 'darkred', 
@@ -229,6 +228,7 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
             color = color_cycle[idx % len(color_cycle)]
             route = [depot] + list(row["stores"]) + [depot]
             route_coords = [coords_dict[pt] for pt in route]
+
             # Query real route geometry from ORS
             try:
                 if len(route_coords) > 1:
@@ -251,13 +251,20 @@ if 'last_results' in st.session_state and st.session_state['last_results'] is no
             except Exception as ex:
                 st.warning(f"Failed to plot real route for {row['truck']}: {ex}")
 
-            # Plot markers for stops as before
-            for pt in route:
+            # Plot numbered markers for each stop
+            for stop_num, pt in enumerate(route):
                 folium.CircleMarker(
                     location=coords_dict[pt][::-1],
-                    radius=6, color=color, fill=True, popup=pt
+                    radius=8, color=color, fill=True, popup=f"{stop_num+1}: {pt}",
+                    tooltip=f"{stop_num+1}. {pt}"
                 ).add_to(m)
-        st.subheader("Route Visualization (By Road)")
+                # Add a number as a visible label on the marker
+                folium.map.Marker(
+                    coords_dict[pt][::-1],
+                    icon=folium.DivIcon(html=f"""<div style="font-size: 14pt; color : {color};"><b>{stop_num+1}</b></div>""")
+                ).add_to(m)
+
+        st.subheader("Route Visualization (By Road, Numbered Stops)")
         st_folium(m, width=800, height=600)
     else:
         st.warning("No results to show. Please optimize again with new input.")

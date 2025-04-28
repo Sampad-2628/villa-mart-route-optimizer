@@ -26,7 +26,7 @@ coords_dict = {
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 
-ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'  # Change this!
+ORS_API_KEY = 'YOUR_ORS_KEY'  # Change this!
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
 st.title("Villa Mart Route Optimizer (Smart Pod-Splitting, Cost & Utilization)")
@@ -54,15 +54,11 @@ mileage = 12.0  # fixed for all trucks
 run_optim = st.button("Optimize Route")
 
 def create_data_model():
-    # Determine max truck capacity
     max_truck_capacity = max([t["capacity"] for t in own_trucks] + [rent_capacity])
-
-    # Step 1: Smart Pod Splitting
     pod_expanded = []
     pod_mapping = {}
     pod_demands = []
     pod_coords = []
-    orig_idx = 1  # 0 is depot
     for store in store_list[:-1]:
         demand = user_crate_demand[store]
         if demand > max_truck_capacity:
@@ -86,7 +82,6 @@ def create_data_model():
             pod_demands.append(demand)
             pod_coords.append(coords_dict[store])
 
-    # Distance matrix expansion
     all_points = [depot] + pod_expanded
     all_coords = [coords_dict[depot]] + pod_coords
     expanded_dist = []
@@ -99,10 +94,8 @@ def create_data_model():
             row.append(km)
         expanded_dist.append(row)
 
-    # Label mapping for output
     display_names = [depot] + pod_expanded
 
-    # Truck labels
     vehicles = []
     truck_trip_labels = []
     for t in own_trucks:
@@ -113,7 +106,6 @@ def create_data_model():
         vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
         truck_trip_labels.append(f"Rented-{i+1}")
 
-    # Build model data
     data = {
         "distance_matrix": expanded_dist,
         "demands": [0] + pod_demands,
@@ -195,11 +187,9 @@ if run_optim:
         rent_cost = 2300 if is_rented and trip["distance"] > 30 else 1500 if is_rented else 0
         fuel_cost = (trip["distance"] / data["mileage"]) * data["petrol_price"] if not is_rented else 0
         total_cost = fuel_cost + rent_cost
-        # Smart pod re-label for output (combine split deliveries in final output)
         output_route = []
         for i, s in enumerate(trip["route"]):
             real_store = pod_mapping.get(s, s)
-            # For split deliveries, append (split) if part of larger pod
             crates = data['demands'][data["pod_names"].index(s)]
             if s != real_store:
                 display = f"{i+1}-{real_store} (split, {crates})"
@@ -226,7 +216,6 @@ if run_optim:
     st.session_state['vrp_trip_labels'] = [o['label'] for o in output] if output else []
     st.session_state['vrp_data'] = data  # save mapping for visualization
 
-# Now display last results (if present)
 if (
     'vrp_df_output' in st.session_state
     and st.session_state['vrp_df_output'] is not None
@@ -242,9 +231,25 @@ if (
     if len(output) > 0:
         selected_trip_label = st.selectbox("Select truck/trip to show its route:", trip_labels)
         idx = trip_labels.index(selected_trip_label)
-        selected_stores = [depot] + trips[idx]["route"] + [depot]
+        selected_trip = trips[idx]
+        selected_stores = [depot] + selected_trip["route"] + [depot]
         m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
         route_coords = [coords_dict[data["pod_mapping"].get(pt, pt)] for pt in selected_stores]
+        # Prepare hover tooltips for each point in this trip
+        hover_labels = []
+        hover_crates = []
+        for pt in selected_stores:
+            # For depot, show always 0
+            if pt == depot:
+                hover_labels.append(f"{depot} (Depot, 0)")
+                hover_crates.append(0)
+            else:
+                # Find crates delivered at this stop in this trip
+                idx_pt = data["pod_names"].index(pt)
+                real = data["pod_mapping"].get(pt, pt)
+                crates = data["demands"][idx_pt]
+                hover_labels.append(f"{real}: {crates} crates")
+                hover_crates.append(crates)
         try:
             if len(route_coords) > 1:
                 response = ors_client.directions(
@@ -261,15 +266,20 @@ if (
             else:
                 folium.CircleMarker(
                     location=route_coords[0][::-1],
-                    radius=7, color="blue", fill=True, popup=selected_stores[0]
+                    radius=7, color="blue", fill=True, popup=hover_labels[0]
                 ).add_to(m)
         except Exception as ex:
             st.warning(f"Failed to plot real route for {selected_trip_label}: {ex}")
-        for pt in selected_stores:
+        # Place markers with tooltips for each point
+        for pt, label, coord in zip(selected_stores, hover_labels, route_coords):
             real = data["pod_mapping"].get(pt, pt)
             folium.CircleMarker(
-                location=coords_dict[real][::-1],
-                radius=10, color='blue', fill=True, popup=real
+                location=coord[::-1],
+                radius=10,
+                color='blue',
+                fill=True,
+                popup=label,
+                tooltip=label
             ).add_to(m)
         st.subheader(f"Route Visualization ({selected_trip_label})")
         st_folium(m, width=800, height=600)

@@ -9,21 +9,38 @@ import openrouteservice
 df_distance = pd.read_csv("bhubaneswar_truck_distance_matrix.csv", index_col=0)
 df_distance.index = df_distance.index.str.strip()
 df_distance.columns = df_distance.columns.str.strip()
-store_list = df_distance.index.tolist()
+
+# 1) Override the auto-list so inputs show in the exact order you wanted:
+store_list = [
+    "Sum Hospital",
+    "Aiims",
+    "Bapuji Nagar",
+    "Baramunda",
+    "Bomikhal",
+    "District Centre (CSPUR)",
+    "Kalinga",
+    "Kanan Vihar - RTO",
+    "Patia",
+    "Symphony Mall",
+    "PatraPada",             # newly added
+    "Villamart (Depot)"      # stays as the depot
+]
 depot = store_list[-1]
 
+# 2) Just add PatraPada’s coords here—everything else unchanged:
 coords_dict = {
-    "Kanan Vihar - RTO": [85.82865, 20.36067],
-    "Sum Hospital": [85.77249, 20.28318],
-    "Symphony Mall": [85.88286, 20.32356],
-    "Aiims": [85.78570, 20.24993],
-    "Bapuji Nagar": [85.84149, 20.25109],
-    "Baramunda": [85.80296, 20.28139],
-    "District Centre (CSPUR)": [85.81827, 20.32664],
-    "Patia": [85.82528, 20.35302],
-    "Kalinga": [85.81536, 20.29597],
-    "Bomikhal": [85.85578, 20.28113],
-    "Villamart (Depot)": [85.77015, 20.24394],
+    "Kanan Vihar - RTO":        [85.82865, 20.36067],
+    "Sum Hospital":             [85.77249, 20.28318],
+    "Symphony Mall":            [85.88286, 20.32356],
+    "Aiims":                    [85.78570, 20.24993],
+    "Bapuji Nagar":             [85.84149, 20.25109],
+    "Baramunda":                [85.80296, 20.28139],
+    "District Centre (CSPUR)":  [85.81827, 20.32664],
+    "Patia":                    [85.82528, 20.35302],
+    "Kalinga":                  [85.81536, 20.29597],
+    "Bomikhal":                 [85.85578, 20.28113],
+    "PatraPada":                [85.76613, 20.23536],  # ← added
+    "Villamart (Depot)":        [85.77015, 20.24394],
 }
 
 ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'  # Change this!
@@ -43,7 +60,7 @@ st.write(f"**Total Crates Entered:** {total_crates}")
 
 st.header("Truck, Rental & Cost Settings")
 own_truck_a = {"name": "Truck A", "capacity": 121, "max_trips": 2}
-own_truck_b = {"name": "Truck B", "capacity": 90, "max_trips": 2}
+own_truck_b = {"name": "Truck B", "capacity": 90,  "max_trips": 2}
 own_trucks = [own_truck_a, own_truck_b]
 rent_capacity = st.number_input("Rented truck capacity (crates)", min_value=70, max_value=300, value=121)
 max_rented_trips = st.number_input("Max rented trips allowed", min_value=0, max_value=10, value=5)
@@ -239,12 +256,10 @@ if (
         hover_labels = []
         hover_crates = []
         for pt in selected_stores:
-            # For depot, show always 0
             if pt == depot:
                 hover_labels.append(f"{depot} (Depot, 0)")
                 hover_crates.append(0)
             else:
-                # Find crates delivered at this stop in this trip
                 idx_pt = data["pod_names"].index(pt)
                 real = data["pod_mapping"].get(pt, pt)
                 crates = data["demands"][idx_pt]

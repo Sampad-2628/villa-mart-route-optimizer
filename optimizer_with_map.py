@@ -10,7 +10,7 @@ df_distance = pd.read_csv("bhubaneswar_truck_distance_matrix.csv", index_col=0)
 df_distance.index = df_distance.index.str.strip()
 df_distance.columns = df_distance.columns.str.strip()
 
-# 1) Override the auto-list so inputs show in the exact order you wanted:
+# 1) Override the auto-generated list so inputs show in your exact order:
 store_list = [
     "Sum Hospital",
     "Aiims",
@@ -22,12 +22,12 @@ store_list = [
     "Kanan Vihar - RTO",
     "Patia",
     "Symphony Mall",
-    "PatraPada",             # newly added
-    "Villamart (Depot)"      # stays as the depot
+    "PatraPada",             # ← newly added
+    "Villamart (Depot)"      # ← depot stays last
 ]
 depot = store_list[-1]
 
-# 2) Just add PatraPada’s coords here—everything else unchanged:
+# 2) Add PatraPada’s coords here—nothing else changes:
 coords_dict = {
     "Kanan Vihar - RTO":        [85.82865, 20.36067],
     "Sum Hospital":             [85.77249, 20.28318],
@@ -53,9 +53,9 @@ st.header("Enter Crate Demand for Each Store")
 user_crate_demand = {}
 total_crates = 0
 for store in store_list[:-1]:
-    value = st.number_input(f"{store}", min_value=0, max_value=300, value=10)
-    user_crate_demand[store] = value
-    total_crates += value
+    v = st.number_input(store, min_value=0, max_value=300, value=10)
+    user_crate_demand[store] = v
+    total_crates += v
 st.write(f"**Total Crates Entered:** {total_crates}")
 
 st.header("Truck, Rental & Cost Settings")
@@ -72,25 +72,23 @@ run_optim = st.button("Optimize Route")
 
 def create_data_model():
     max_truck_capacity = max([t["capacity"] for t in own_trucks] + [rent_capacity])
-    pod_expanded = []
-    pod_mapping = {}
-    pod_demands = []
-    pod_coords = []
+    pod_expanded, pod_mapping, pod_demands, pod_coords = [], {}, [], []
+
     for store in store_list[:-1]:
         demand = user_crate_demand[store]
         if demand > max_truck_capacity:
             n_full = demand // max_truck_capacity
-            last = demand % max_truck_capacity
+            last   = demand % max_truck_capacity
             for i in range(n_full):
-                new_name = f"{store}__part{i+1}"
-                pod_expanded.append(new_name)
-                pod_mapping[new_name] = store
+                name = f"{store}__part{i+1}"
+                pod_expanded.append(name)
+                pod_mapping[name] = store
                 pod_demands.append(max_truck_capacity)
                 pod_coords.append(coords_dict[store])
             if last > 0:
-                new_name = f"{store}__part{n_full+1}"
-                pod_expanded.append(new_name)
-                pod_mapping[new_name] = store
+                name = f"{store}__part{n_full+1}"
+                pod_expanded.append(name)
+                pod_mapping[name] = store
                 pod_demands.append(last)
                 pod_coords.append(coords_dict[store])
         else:
@@ -100,203 +98,159 @@ def create_data_model():
             pod_coords.append(coords_dict[store])
 
     all_points = [depot] + pod_expanded
-    all_coords = [coords_dict[depot]] + pod_coords
+    all_coords  = [coords_dict[depot]] + pod_coords
+
+    # Build expanded distance matrix
     expanded_dist = []
-    for i, from_store in enumerate(all_points):
-        from_actual = pod_mapping[from_store] if from_store != depot else depot
+    for from_store in all_points:
+        from_actual = pod_mapping.get(from_store, depot)
         row = []
-        for j, to_store in enumerate(all_points):
-            to_actual = pod_mapping[to_store] if to_store != depot else depot
-            km = df_distance.loc[from_actual, to_actual]
-            row.append(km)
+        for to_store in all_points:
+            to_actual = pod_mapping.get(to_store, depot)
+            row.append(df_distance.loc[from_actual, to_actual])
         expanded_dist.append(row)
 
-    display_names = [depot] + pod_expanded
-
-    vehicles = []
-    truck_trip_labels = []
+    # Vehicle definitions
+    vehicles, labels = [], []
     for t in own_trucks:
-        for i in range(t["max_trips"]):
-            vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"], "trip": i+1})
-            truck_trip_labels.append(f"{t['name']} - Trip {i+1}")
-    for i in range(max_rented_trips):
-        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
-        truck_trip_labels.append(f"Rented-{i+1}")
+        for trip in range(1, t["max_trips"]+1):
+            vehicles.append({"type":"own",    "name":t["name"],   "capacity":t["capacity"], "trip":trip})
+            labels.append(f"{t['name']} - Trip {trip}")
+    for i in range(1, max_rented_trips+1):
+        vehicles.append({"type":"rented", "name":f"Rented-{i}", "capacity":rent_capacity,    "trip":1})
+        labels.append(f"Rented-{i}")
 
-    data = {
+    return {
         "distance_matrix": expanded_dist,
-        "demands": [0] + pod_demands,
-        "vehicle_capacities": [v["capacity"] for v in vehicles],
-        "num_vehicles": len(vehicles),
-        "depot": 0,
-        "vehicles": vehicles,
-        "pod_names": all_points,
-        "display_names": display_names,
-        "pod_mapping": pod_mapping,
-        "coords": all_coords,
-        "truck_trip_labels": truck_trip_labels,
-        "petrol_price": petrol_price,
-        "mileage": mileage,
-        "km_matrix": expanded_dist,
+        "demands":         [0] + pod_demands,
+        "vehicle_capacities":[v["capacity"] for v in vehicles],
+        "num_vehicles":    len(vehicles),
+        "depot":           0,
+        "vehicles":        vehicles,
+        "pod_names":       all_points,
+        "pod_mapping":     pod_mapping,
+        "coords":          all_coords,
+        "truck_trip_labels": labels,
+        "petrol_price":    petrol_price,
+        "mileage":         mileage,
+        "km_matrix":       expanded_dist,
     }
-    return data
 
 def solve_vrp(data):
-    manager = pywrapcp.RoutingIndexManager(len(data['distance_matrix']), data['num_vehicles'], data['depot'])
-    routing = pywrapcp.RoutingModel(manager)
-    for vehicle_id, v in enumerate(data['vehicles']):
-        if v['type'] == 'rented':
-            routing.SetFixedCostOfVehicle(100000, vehicle_id)
-    def distance_callback(from_idx, to_idx):
-        from_node = manager.IndexToNode(from_idx)
-        to_node = manager.IndexToNode(to_idx)
-        return int(data['distance_matrix'][from_node][to_node] * 100)  # Avoid floats
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-    def demand_callback(from_idx):
-        from_node = manager.IndexToNode(from_idx)
-        return data['demands'][from_node]
-    demand_callback_idx = routing.RegisterUnaryTransitCallback(demand_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        demand_callback_idx, 0, data['vehicle_capacities'], True, 'Capacity')
-    search_params = pywrapcp.DefaultRoutingSearchParameters()
-    search_params.time_limit.seconds = 30
-    search_params.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
-    search_params.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-    solution = routing.SolveWithParameters(search_params)
+    mgr   = pywrapcp.RoutingIndexManager(len(data["distance_matrix"]), data["num_vehicles"], data["depot"])
+    rout  = pywrapcp.RoutingModel(mgr)
+    # Fixed cost to discourage rented vehicles
+    for vid, v in enumerate(data["vehicles"]):
+        if v["type"] == "rented":
+            rout.SetFixedCostOfVehicle(100000, vid)
+
+    def dist_cb(i, j):
+        return int(data["distance_matrix"][mgr.IndexToNode(i)][mgr.IndexToNode(j)] * 100)
+    dcb_idx = rout.RegisterTransitCallback(dist_cb)
+    rout.SetArcCostEvaluatorOfAllVehicles(dcb_idx)
+
+    def demand_cb(i):
+        return data["demands"][mgr.IndexToNode(i)]
+    demand_idx = rout.RegisterUnaryTransitCallback(demand_cb)
+    rout.AddDimensionWithVehicleCapacity(demand_idx, 0, data["vehicle_capacities"], True, "Capacity")
+
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.time_limit.seconds = 30
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+
+    sol = rout.SolveWithParameters(params)
     trips = []
-    if solution:
-        for vehicle_id in range(data['num_vehicles']):
-            index = routing.Start(vehicle_id)
-            route = []
-            total_load = 0
-            trip_km = 0
-            while not routing.IsEnd(index):
-                node = manager.IndexToNode(index)
+    if sol:
+        for vid in range(data["num_vehicles"]):
+            idx = rout.Start(vid)
+            route, load, dist = [], 0, 0
+            while not rout.IsEnd(idx):
+                node = mgr.IndexToNode(idx)
                 if node != 0:
                     route.append(data["pod_names"][node])
-                total_load += data['demands'][node]
-                prev_index = index
-                index = solution.Value(routing.NextVar(index))
-                if not routing.IsEnd(index):
-                    trip_km += data["km_matrix"][manager.IndexToNode(prev_index)][manager.IndexToNode(index)]
+                load += data["demands"][node]
+                prev = idx
+                idx = sol.Value(rout.NextVar(idx))
+                if not rout.IsEnd(idx):
+                    dist += data["km_matrix"][mgr.IndexToNode(prev)][mgr.IndexToNode(idx)]
             if route:
                 trips.append({
-                    "vehicle_id": vehicle_id,
-                    "vehicle": data["vehicles"][vehicle_id],
-                    "route": route,
-                    "load": total_load,
-                    "distance": trip_km / 1.0,
-                    "label": data["truck_trip_labels"][vehicle_id]
+                    "vehicle_id": vid,
+                    "vehicle":    data["vehicles"][vid],
+                    "route":      route,
+                    "load":       load,
+                    "distance":   dist,
+                    "label":      data["truck_trip_labels"][vid]
                 })
     return trips
 
 if run_optim:
-    data = create_data_model()
+    data  = create_data_model()
     trips = solve_vrp(data)
     output = []
-    pod_mapping = data["pod_mapping"]
     for trip in trips:
-        v = trip["vehicle"]
-        is_rented = v["type"] == "rented"
-        rent_cost = 2300 if is_rented and trip["distance"] > 30 else 1500 if is_rented else 0
-        fuel_cost = (trip["distance"] / data["mileage"]) * data["petrol_price"] if not is_rented else 0
-        total_cost = fuel_cost + rent_cost
-        output_route = []
-        for i, s in enumerate(trip["route"]):
-            real_store = pod_mapping.get(s, s)
-            crates = data['demands'][data["pod_names"].index(s)]
-            if s != real_store:
-                display = f"{i+1}-{real_store} (split, {crates})"
-            else:
-                display = f"{i+1}-{real_store} ({crates})"
-            output_route.append(display)
-        route_str = " -> ".join(output_route)
+        v        = trip["vehicle"]
+        rented   = (v["type"] == "rented")
+        rent_c   = 2300 if rented and trip["distance"] > 30 else (1500 if rented else 0)
+        fuel_c   = ((trip["distance"]/data["mileage"])*data["petrol_price"]) if not rented else 0
+        total_c  = rent_c + fuel_c
+
+        route_str = " -> ".join(
+            f"{i+1}-{data['pod_mapping'].get(s,s)} ({data['demands'][data['pod_names'].index(s)]})"
+            for i, s in enumerate(trip["route"])
+        )
         output.append({
-            "truck": v["name"],
-            "trip": v.get("trip", 1),
-            "label": trip.get("label", f"{v['name']} - Trip {v.get('trip',1)}"),
-            "type": v["type"],
-            "route": route_str,
-            "load": trip["load"],
-            "distance": round(trip["distance"], 2),
-            "fuel_cost": round(fuel_cost, 2),
-            "rent_cost": rent_cost,
-            "total_cost": round(total_cost, 2),
+            "truck":      v["name"],
+            "trip":       v["trip"],
+            "label":      trip["label"],
+            "type":       v["type"],
+            "route":      route_str,
+            "load":       trip["load"],
+            "distance":   round(trip["distance"], 2),
+            "fuel_cost":  round(fuel_c, 2),
+            "rent_cost":  rent_c,
+            "total_cost": round(total_c, 2),
         })
+
     df_output = pd.DataFrame(output)
     st.session_state['vrp_df_output'] = df_output
-    st.session_state['vrp_trips'] = trips
-    st.session_state['vrp_output_data'] = output
-    st.session_state['vrp_trip_labels'] = [o['label'] for o in output] if output else []
-    st.session_state['vrp_data'] = data  # save mapping for visualization
+    st.session_state['vrp_trips']     = trips
+    st.session_state['vrp_data']      = data
 
-if (
-    'vrp_df_output' in st.session_state
-    and st.session_state['vrp_df_output'] is not None
-    and not st.session_state['vrp_df_output'].empty
-):
+# --- OUTPUT & MAP ---
+if 'vrp_df_output' in st.session_state and not st.session_state['vrp_df_output'].empty:
     df_output = st.session_state['vrp_df_output']
-    trips = st.session_state['vrp_trips']
-    output = st.session_state['vrp_output_data']
-    trip_labels = st.session_state['vrp_trip_labels']
-    data = st.session_state['vrp_data']
+    trips     = st.session_state['vrp_trips']
+    data      = st.session_state['vrp_data']
+
     st.header("Optimized Trip Plan (Smart Split)")
     st.dataframe(df_output)
-    if len(output) > 0:
-        selected_trip_label = st.selectbox("Select truck/trip to show its route:", trip_labels)
-        idx = trip_labels.index(selected_trip_label)
-        selected_trip = trips[idx]
-        selected_stores = [depot] + selected_trip["route"] + [depot]
-        m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
-        route_coords = [coords_dict[data["pod_mapping"].get(pt, pt)] for pt in selected_stores]
-        # Prepare hover tooltips for each point in this trip
-        hover_labels = []
-        hover_crates = []
-        for pt in selected_stores:
-            if pt == depot:
-                hover_labels.append(f"{depot} (Depot, 0)")
-                hover_crates.append(0)
-            else:
-                idx_pt = data["pod_names"].index(pt)
-                real = data["pod_mapping"].get(pt, pt)
-                crates = data["demands"][idx_pt]
-                hover_labels.append(f"{real}: {crates} crates")
-                hover_crates.append(crates)
-        try:
-            if len(route_coords) > 1:
-                response = ors_client.directions(
-                    coordinates=route_coords,
-                    profile='driving-hgv',
-                    format='geojson'
-                )
-                geometry = response['features'][0]['geometry']
-                folium.GeoJson(
-                    geometry,
-                    name=f"{selected_trip_label}",
-                    style_function=lambda x: {'color': 'blue', 'weight': 6, 'opacity': 0.85}
-                ).add_to(m)
-            else:
-                folium.CircleMarker(
-                    location=route_coords[0][::-1],
-                    radius=7, color="blue", fill=True, popup=hover_labels[0]
-                ).add_to(m)
-        except Exception as ex:
-            st.warning(f"Failed to plot real route for {selected_trip_label}: {ex}")
-        # Place markers with tooltips for each point
-        for pt, label, coord in zip(selected_stores, hover_labels, route_coords):
-            real = data["pod_mapping"].get(pt, pt)
-            folium.CircleMarker(
-                location=coord[::-1],
-                radius=10,
-                color='blue',
-                fill=True,
-                popup=label,
-                tooltip=label
-            ).add_to(m)
-        st.subheader(f"Route Visualization ({selected_trip_label})")
-        st_folium(m, width=800, height=600)
+
+    sel = st.selectbox("Select truck/trip to visualize:", df_output['label'].tolist())
+    sel_idx = df_output.index[df_output['label'] == sel][0]
+    trip    = trips[sel_idx]
+    stops   = [depot] + trip["route"] + [depot]
+
+    m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
+    coords = [coords_dict[data["pod_mapping"].get(s,s)] for s in stops]
+
+    try:
+        if len(coords) > 1:
+            resp     = ors_client.directions(coordinates=coords, profile='driving-hgv', format='geojson')
+            geom     = resp['features'][0]['geometry']
+            folium.GeoJson(geom, style_function=lambda x: {'color':'blue','weight':6,'opacity':0.8}).add_to(m)
+        else:
+            folium.CircleMarker(location=coords[0][::-1], radius=7, color='blue', fill=True).add_to(m)
+    except Exception as e:
+        st.warning(f"Could not draw real route: {e}")
+
+    # markers
+    for s, coord in zip(stops, coords):
+        lbl = f"{data['pod_mapping'].get(s,s)}: {data['demands'][data['pod_names'].index(s)]} crates"
+        folium.CircleMarker(location=coord[::-1], radius=8, color='blue', fill=True, tooltip=lbl).add_to(m)
+
+    st.subheader(f"Route Map: {sel}")
+    st_folium(m, width=800, height=600)
 else:
-    st.info("Enter demand and click Optimize to run.")
+    st.info("Enter demands and click Optimize to run.")

@@ -23,7 +23,7 @@ store_list = [
     "Kanan Vihar - RTO",
     "Patia",
     "Symphony Mall",
-    "PatraPada",
+    "Patrapada",
     "Villamart (Depot)"
 ]
 depot = store_list[-1]
@@ -40,7 +40,7 @@ coords_dict = {
     "Kanan Vihar - RTO": [85.82865, 20.36067],
     "Patia": [85.82528, 20.35302],
     "Symphony Mall": [85.88286, 20.32356],
-    "PatraPada": [85.76613, 20.23536],
+    "Patrapada": [85.76613, 20.23536],
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 

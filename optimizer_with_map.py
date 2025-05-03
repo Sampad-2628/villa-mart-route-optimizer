@@ -56,31 +56,30 @@ own_truck_b = {"name": "Truck B", "capacity": 90, "max_trips": 2}
 own_trucks = [own_truck_a, own_truck_b]
 rent_capacity = st.number_input("Rented truck capacity (crates)", 70, 300, 121)
 max_rented_trips = st.number_input("Max rented trips allowed", 0, 10, 5)
-avg_speed = st.number_input("Average truck speed (km/hr)", 30, 100, 60)
 petrol_price = st.number_input("Current petrol price (₹/litre)", 0, 1000, 101)
 mileage = 12.0
 
 run_optim = st.button("Optimize Route")
 
 def create_data_model():
-    max_truck_capacity = max([t["capacity"] for t in own_trucks] + [rent_capacity])
+    max_cap = max([t["capacity"] for t in own_trucks] + [rent_capacity])
     pod_expanded, pod_mapping, pod_demands, pod_coords = [], {}, [], []
 
     for store in store_list[:-1]:
         demand = user_crate_demand.get(store, 0)
-        if demand > max_truck_capacity:
-            n_full = demand // max_truck_capacity
-            last = demand % max_truck_capacity
+        if demand > max_cap:
+            n_full = demand // max_cap
+            last = demand % max_cap
             for i in range(n_full):
-                new_name = f"{store}__part{i+1}"
-                pod_expanded.append(new_name)
-                pod_mapping[new_name] = store
-                pod_demands.append(max_truck_capacity)
+                name = f"{store}__part{i+1}"
+                pod_expanded.append(name)
+                pod_mapping[name] = store
+                pod_demands.append(max_cap)
                 pod_coords.append(coords_dict[store])
             if last > 0:
-                new_name = f"{store}__part{n_full+1}"
-                pod_expanded.append(new_name)
-                pod_mapping[new_name] = store
+                name = f"{store}__part{n_full+1}"
+                pod_expanded.append(name)
+                pod_mapping[name] = store
                 pod_demands.append(last)
                 pod_coords.append(coords_dict[store])
         else:
@@ -92,22 +91,22 @@ def create_data_model():
     all_points = [depot] + pod_expanded
     all_coords = [coords_dict[depot]] + pod_coords
     expanded_dist = []
-    for from_store in all_points:
+    for i, from_store in enumerate(all_points):
         from_actual = pod_mapping.get(from_store, from_store)
         row = []
-        for to_store in all_points:
+        for j, to_store in enumerate(all_points):
             to_actual = pod_mapping.get(to_store, to_store)
             row.append(df_distance.loc[from_actual, to_actual])
         expanded_dist.append(row)
 
-    vehicles, truck_trip_labels = [], []
+    vehicles, labels = [], []
     for t in own_trucks:
         for i in range(t["max_trips"]):
             vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"], "trip": i+1})
-            truck_trip_labels.append(f"{t['name']} - Trip {i+1}")
+            labels.append(f"{t['name']} - Trip {i+1}")
     for i in range(max_rented_trips):
-        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
-        truck_trip_labels.append(f"Rented-{i+1}")
+        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity})
+        labels.append(f"Rented-{i+1}")
 
     return {
         "distance_matrix": expanded_dist,
@@ -119,7 +118,7 @@ def create_data_model():
         "pod_names": all_points,
         "pod_mapping": pod_mapping,
         "coords": all_coords,
-        "truck_trip_labels": truck_trip_labels,
+        "truck_trip_labels": labels,
         "petrol_price": petrol_price,
         "mileage": mileage,
         "km_matrix": expanded_dist,
@@ -128,24 +127,18 @@ def create_data_model():
 def solve_vrp(data):
     manager = pywrapcp.RoutingIndexManager(len(data['distance_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
-    for vehicle_id, v in enumerate(data['vehicles']):
+    for vid, v in enumerate(data['vehicles']):
         if v['type'] == 'rented':
-            routing.SetFixedCostOfVehicle(100000, vehicle_id)
+            routing.SetFixedCostOfVehicle(100000, vid)
 
-    def distance_callback(from_idx, to_idx):
-        from_node = manager.IndexToNode(from_idx)
-        to_node = manager.IndexToNode(to_idx)
-        return int(data['distance_matrix'][from_node][to_node] * 100)
+    def distance_callback(f, t):
+        return int(data['distance_matrix'][manager.IndexToNode(f)][manager.IndexToNode(t)] * 100)
+    transit_callback = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback)
 
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-    def demand_callback(from_idx):
-        return data['demands'][manager.IndexToNode(from_idx)]
-
+    demand_callback = lambda i: data['demands'][manager.IndexToNode(i)]
     demand_callback_idx = routing.RegisterUnaryTransitCallback(demand_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        demand_callback_idx, 0, data['vehicle_capacities'], True, 'Capacity')
+    routing.AddDimensionWithVehicleCapacity(demand_callback_idx, 0, data['vehicle_capacities'], True, 'Capacity')
 
     search_params = pywrapcp.DefaultRoutingSearchParameters()
     search_params.time_limit.seconds = 30
@@ -157,23 +150,23 @@ def solve_vrp(data):
     if solution:
         for vid in range(data['num_vehicles']):
             index = routing.Start(vid)
-            route, total_load, trip_km = [], 0, 0
+            route, load, km = [], 0, 0
             while not routing.IsEnd(index):
                 node = manager.IndexToNode(index)
                 if node != 0:
-                    route.append(data["pod_names"][node])
-                total_load += data['demands'][node]
-                prev_index = index
+                    route.append(data['pod_names'][node])
+                load += data['demands'][node]
+                prev = index
                 index = solution.Value(routing.NextVar(index))
                 if not routing.IsEnd(index):
-                    trip_km += data["km_matrix"][manager.IndexToNode(prev_index)][manager.IndexToNode(index)]
+                    km += data['km_matrix'][manager.IndexToNode(prev)][manager.IndexToNode(index)]
             if route:
                 trips.append({
                     "vehicle_id": vid,
                     "vehicle": data["vehicles"][vid],
                     "route": route,
-                    "load": total_load,
-                    "distance": trip_km,
+                    "load": load,
+                    "distance": km,
                     "label": data["truck_trip_labels"][vid]
                 })
     return trips
@@ -182,48 +175,44 @@ if run_optim:
     data = create_data_model()
     trips = solve_vrp(data)
     output = []
-    pod_mapping = data["pod_mapping"]
     for trip in trips:
         v = trip["vehicle"]
         is_rented = v["type"] == "rented"
         rent_cost = 2300 if is_rented and trip["distance"] > 30 else 1500 if is_rented else 0
         fuel_cost = (trip["distance"] / data["mileage"]) * data["petrol_price"] if not is_rented else 0
         total_cost = fuel_cost + rent_cost
-        output_route = []
+        out_route = []
         for i, s in enumerate(trip["route"]):
-            real_store = pod_mapping.get(s, s)
+            real = data["pod_mapping"].get(s, s)
             crates = data['demands'][data["pod_names"].index(s)]
-            label = f"{i+1}-{real_store} ({crates})" if s == real_store else f"{i+1}-{real_store} (split, {crates})"
-            output_route.append(label)
-        route_str = " -> ".join(output_route)
+            label = f"{i+1}-{real} ({crates})" if s == real else f"{i+1}-{real} (split, {crates})"
+            out_route.append(label)
         output.append({
-            "truck": v["name"], "trip": v.get("trip", 1), "label": trip.get("label"),
-            "type": v["type"], "route": route_str, "load": trip["load"],
+            "truck": v["name"], "trip": v.get("trip", 1), "label": trip["label"],
+            "type": v["type"], "route": " -> ".join(out_route), "load": trip["load"],
             "distance": round(trip["distance"], 2), "fuel_cost": round(fuel_cost, 2),
             "rent_cost": rent_cost, "total_cost": round(total_cost, 2),
         })
     df_output = pd.DataFrame(output)
     st.dataframe(df_output)
 
-    selected = st.selectbox("Select truck/trip to show its route:", [o['label'] for o in output])
-    selected_trip = next(t for t in trips if t['label'] == selected)
-    selected_stores = [depot] + selected_trip["route"] + [depot]
+    selected = st.selectbox("Select truck/trip to show its route:", [o["label"] for o in output])
+    selected_trip = next(t for t in trips if t["label"] == selected)
+    stores = [depot] + selected_trip["route"] + [depot]
     m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
-    route_coords = [coords_dict[data["pod_mapping"].get(pt, pt)] for pt in selected_stores]
+    coords = [coords_dict[data["pod_mapping"].get(pt, pt)] for pt in stores]
 
     try:
-        response = ors_client.directions(coordinates=route_coords, profile='driving-hgv', format='geojson')
-        geometry = response['features'][0]['geometry']
-        folium.GeoJson(geometry, name="Route", style_function=lambda x: {'color': 'blue'}).add_to(m)
+        res = ors_client.directions(coords, profile='driving-hgv', format='geojson')
+        folium.GeoJson(res["features"][0]["geometry"], style_function=lambda x: {'color': 'blue'}).add_to(m)
     except:
         pass
 
-    for pt in selected_stores:
+    for pt in stores:
         real = data["pod_mapping"].get(pt, pt)
-        crates = 0 if pt == depot else data['demands'][data["pod_names"].index(pt)]
+        crates = 0 if pt == depot else data["demands"][data["pod_names"].index(pt)]
         folium.CircleMarker(
-            location=coords_dict[real][::-1], radius=6, fill=True,
-            tooltip=f"{real}: {crates} crates"
+            location=coords_dict[real][::-1], radius=6, fill=True, tooltip=f"{real}: {crates} crates"
         ).add_to(m)
 
     st.subheader(f"Route Visualization ({selected})")

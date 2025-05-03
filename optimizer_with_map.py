@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import folium
@@ -22,8 +23,8 @@ store_list = [
     "Kanan Vihar - RTO",
     "Patia",
     "Symphony Mall",
-    "PatraPada",               # ✅ NEW DARKSTORE
-    "Villamart (Depot)"        # ✅ DEPOT (must be last)
+    "PatraPada",
+    "Villamart (Depot)"
 ]
 depot = store_list[-1]
 
@@ -43,7 +44,7 @@ coords_dict = {
     "Villamart (Depot)": [85.77015, 20.24394],
 }
 
-ORS_API_KEY = 'your_openrouteservice_api_key'
+ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
 st.title("Villa Mart Route Optimizer (Smart Pod-Splitting, Cost & Utilization)")
@@ -53,7 +54,10 @@ st.header("Enter Crate Demand for Each Store")
 user_crate_demand = {}
 total_crates = 0
 for store in store_list[:-1]:
-    value = st.number_input(f"{store}", min_value=0, max_value=300, value=10)
+    try:
+        value = int(st.number_input(f"{store}", min_value=0, max_value=300, value=10))
+    except:
+        value = 0
     user_crate_demand[store] = value
     total_crates += value
 st.write(f"**Total Crates Entered:** {total_crates}")
@@ -77,7 +81,9 @@ def create_data_model():
     pod_expanded, pod_mapping, pod_demands, pod_coords = [], {}, [], []
 
     for store in store_list[:-1]:
-        demand = user_crate_demand[store]
+        demand = user_crate_demand.get(store, 0)
+        if demand is None:
+            demand = 0
         if demand > max_truck_capacity:
             n_full = demand // max_truck_capacity
             last = demand % max_truck_capacity
@@ -137,7 +143,6 @@ def create_data_model():
         "km_matrix": expanded_dist,
     }
 
-# ===== VRP SOLVER =====
 def solve_vrp(data):
     manager = pywrapcp.RoutingIndexManager(len(data['distance_matrix']), data['num_vehicles'], data['depot'])
     routing = pywrapcp.RoutingModel(manager)
@@ -192,7 +197,6 @@ def solve_vrp(data):
                 })
     return trips
 
-# ===== RUN OPTIMIZATION =====
 if run_optim:
     data = create_data_model()
     trips = solve_vrp(data)
@@ -229,18 +233,14 @@ if run_optim:
     st.session_state['vrp_trip_labels'] = [o['label'] for o in output]
     st.session_state['vrp_data'] = data
 
-# ===== DISPLAY RESULT =====
-if (
-    'vrp_df_output' in st.session_state
-    and not st.session_state['vrp_df_output'].empty
-):
+if 'vrp_df_output' in st.session_state and not st.session_state['vrp_df_output'].empty:
     df_output = st.session_state['vrp_df_output']
     trips = st.session_state['vrp_trips']
     output = st.session_state['vrp_output_data']
     trip_labels = st.session_state['vrp_trip_labels']
     data = st.session_state['vrp_data']
 
-    st.header("Optimized Trip Plan (Smart Split)")
+    st.header("Optimized Trip Plan")
     st.dataframe(df_output)
 
     selected_trip_label = st.selectbox("Select truck/trip to show its route:", trip_labels)
@@ -290,3 +290,4 @@ if (
     st_folium(m, width=800, height=600)
 else:
     st.info("Enter demand and click Optimize to run.")
+

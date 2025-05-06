@@ -27,7 +27,7 @@ coords_dict = {
     "Villamart (Depot)":      [85.77015, 20.24394],
 }
 
-ORS_API_KEY = 'YOUR_ORS_API_KEY'
+ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
 st.title("Villa Mart Route Optimizer")

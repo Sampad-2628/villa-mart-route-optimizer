@@ -23,7 +23,7 @@ coords_dict = {
     "Patia":                  [85.82528, 20.35302],
     "Kalinga":                [85.81536, 20.29597],
     "Bomikhal":               [85.85578, 20.28113],
-    "PatraPada":              [85.76613, 20.23536],  # ← newly added
+    "PatraPada":              [85.76613, 20.23536],
     "Villamart (Depot)":      [85.77015, 20.24394],
 }
 
@@ -62,15 +62,15 @@ def create_data_model():
             full, rem = divmod(d, max_cap)
             for i in range(full):
                 name = f"{store}__part{i+1}"
-                pod_expanded.append(name); pod_mapping[name]=store
+                pod_expanded.append(name); pod_mapping[name] = store
                 pod_demands.append(max_cap); pod_coords.append(coords_dict[store])
             if rem:
                 name = f"{store}__part{full+1}"
-                pod_expanded.append(name); pod_mapping[name]=store
-                pod_demands.append(rem);   pod_coords.append(coords_dict[store])
+                pod_expanded.append(name); pod_mapping[name] = store
+                pod_demands.append(rem);    pod_coords.append(coords_dict[store])
         else:
-            pod_expanded.append(store); pod_mapping[store]=store
-            pod_demands.append(d); pod_coords.append(coords_dict[store])
+            pod_expanded.append(store); pod_mapping[store] = store
+            pod_demands.append(d);      pod_coords.append(coords_dict[store])
 
     all_points = [depot] + pod_expanded
     expanded_dist = []
@@ -82,10 +82,10 @@ def create_data_model():
     vehicles, labels = [], []
     for t in own_trucks:
         for trip in range(t["max_trips"]):
-            vehicles.append({"type":"own","name":t["name"],"capacity":t["capacity"],"trip":trip+1})
+            vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"], "trip": trip+1})
             labels.append(f"{t['name']} - Trip {trip+1}")
     for i in range(max_rented_trips):
-        vehicles.append({"type":"rented","name":f"Rented-{i+1}","capacity":rent_capacity,"trip":1})
+        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
         labels.append(f"Rented-{i+1}")
 
     return {
@@ -107,8 +107,9 @@ def solve_vrp(data):
     mgr = pywrapcp.RoutingIndexManager(len(data["distance_matrix"]), data["num_vehicles"], data["depot"])
     routing = pywrapcp.RoutingModel(mgr)
 
+    # fixed cost for rented vehicles
     for vid, v in enumerate(data["vehicles"]):
-        if v["type"]=="rented":
+        if v["type"] == "rented":
             routing.SetFixedCostOfVehicle(100000, vid)
 
     def dist_cb(i, j):
@@ -121,12 +122,12 @@ def solve_vrp(data):
     dcb = routing.RegisterUnaryTransitCallback(dem_cb)
     routing.AddDimensionWithVehicleCapacity(dcb, 0, data["vehicle_capacities"], True, "Capacity")
 
-    parms = pywrapcp.DefaultRoutingSearchParameters()
-    parms.time_limit.seconds = 30
-    parms.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    parms.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.time_limit.seconds = 30
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
 
-    sol = routing.SolveWithParameters(parms)
+    sol = routing.SolveWithParameters(params)
     trips = []
     if sol:
         for vid in range(data["num_vehicles"]):
@@ -146,7 +147,7 @@ def solve_vrp(data):
                     "route": route,
                     "load": load,
                     "distance": dist_km,
-                    "label": data["truck_trip_labels"][vid]  # ← guarantee we have a label
+                    "label": data["truck_trip_labels"][vid]
                 })
     return trips
 
@@ -156,9 +157,9 @@ if run_optim:
     output = []
     for trip in trips:
         v = trip["vehicle"]
-        is_r = (v["type"]=="rented")
-        rent_cost = 2300 if is_r and trip["distance"]>30 else (1500 if is_r else 0)
-        fuel_cost = (trip["distance"]/data["mileage"])*data["petrol_price"] if not is_r else 0
+        is_r = (v["type"] == "rented")
+        rent_cost = 2300 if is_r and trip["distance"] > 30 else (1500 if is_r else 0)
+        fuel_cost = (trip["distance"] / data["mileage"]) * data["petrol_price"] if not is_r else 0
         total = round(rent_cost + fuel_cost, 2)
 
         parts = []
@@ -178,7 +179,7 @@ if run_optim:
             "distance":  round(trip["distance"], 2),
             "fuel_cost": round(fuel_cost, 2),
             "rent_cost": rent_cost,
-            "total_cost":total,
+            "total_cost": total,
         })
 
     df_out = pd.DataFrame(output)
@@ -197,7 +198,7 @@ if (
     df_output   = st.session_state['vrp_df_output']
     trips       = st.session_state['vrp_trips']
     trip_labels = st.session_state['vrp_trip_labels']
-    data        = st.session_state['vrp_data']  # ← bring data back into scope
+    data        = st.session_state['vrp_data']
 
     st.header("Optimized Trip Plan (Smart Split)")
     st.dataframe(df_output)
@@ -212,14 +213,28 @@ if (
     m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
     try:
         resp = ors_client.directions(coordinates=coords, profile='driving-hgv', format='geojson')
-        folium.GeoJson(resp['features'][0]['geometry'],
-                       style_function=lambda x: {'color':'blue','weight':6,'opacity':0.85}
-                      ).add_to(m)
+        folium.GeoJson(
+            resp['features'][0]['geometry'],
+            style_function=lambda x: {'color':'blue','weight':6,'opacity':0.85}
+        ).add_to(m)
     except Exception as e:
         st.warning(f"Couldn’t plot real route: {e}")
 
-    for pt, c in zip(stops, coords):
-        folium.CircleMarker(location=c[::-1], radius=8, popup=pt, tooltip=pt).add_to(m)
+    # place markers with name + crate count on hover
+    for pt, coord in zip(stops, coords):
+        if pt == depot:
+            label = f"{depot} (Depot, 0 crates)"
+        else:
+            idx_pt = data["pod_names"].index(pt)
+            real   = data["pod_mapping"].get(pt, pt)
+            crates = data["demands"][idx_pt]
+            label  = f"{real}: {crates} crates"
+        folium.CircleMarker(
+            location=coord[::-1],
+            radius=8,
+            popup=label,
+            tooltip=label
+        ).add_to(m)
 
     st.subheader(f"Route Visualization: {sel}")
     st_folium(m, width=800, height=600)

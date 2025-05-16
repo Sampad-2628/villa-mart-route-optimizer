@@ -30,7 +30,7 @@ coords_dict = {
 ORS_API_KEY = '5b3ce3597851110001cf62488858392856e24062ae6ba005c2e38325'
 ors_client = openrouteservice.Client(key=ORS_API_KEY)
 
-st.title("Villa Mart Route Optimizer (Smart Pod-Splitting, Cost & Utilization)")
+st.title("Villa Mart Route Optimizer (Smart Pod-Splitting, Cost, Utilization & Timing)")
 
 # --- INPUTS ---
 st.header("Enter Crate Demand for Each Store")
@@ -42,14 +42,15 @@ for store in store_list[:-1]:
     total_crates += val
 st.write(f"**Total Crates Entered:** {total_crates}")
 
-st.header("Truck, Rental & Cost Settings")
+st.header("Truck, Rental, Cost & Speed Settings")
 own_truck_a = {"name": "Truck A", "capacity": 121, "max_trips": 2}
 own_truck_b = {"name": "Truck B", "capacity": 90,  "max_trips": 2}
 own_trucks = [own_truck_a, own_truck_b]
 rent_capacity = st.number_input("Rented truck capacity (crates)", 70, 300, 121)
 max_rented_trips = st.number_input("Max rented trips allowed", 0, 10, 5)
 petrol_price = st.number_input("Current petrol price (₹/litre)", 0, 1000, 101)
-mileage = 12.0  # fixed mileage
+mileage = 12.0  # fixed for all trucks
+avg_speed = st.number_input("Average truck speed (km/hr)", 30, 200, 70)
 
 run_optim = st.button("Optimize Route")
 
@@ -82,10 +83,10 @@ def create_data_model():
     vehicles, labels = [], []
     for t in own_trucks:
         for trip in range(t["max_trips"]):
-            vehicles.append({"type": "own", "name": t["name"], "capacity": t["capacity"], "trip": trip+1})
+            vehicles.append({"type":"own","name":t["name"],"capacity":t["capacity"],"trip":trip+1})
             labels.append(f"{t['name']} - Trip {trip+1}")
     for i in range(max_rented_trips):
-        vehicles.append({"type": "rented", "name": f"Rented-{i+1}", "capacity": rent_capacity, "trip": 1})
+        vehicles.append({"type":"rented","name":f"Rented-{i+1}","capacity":rent_capacity,"trip":1})
         labels.append(f"Rented-{i+1}")
 
     return {
@@ -100,16 +101,15 @@ def create_data_model():
         "truck_trip_labels": labels,
         "petrol_price": petrol_price,
         "mileage": mileage,
+        "avg_speed": avg_speed,
         "km_matrix": expanded_dist,
     }
 
 def solve_vrp(data):
     mgr = pywrapcp.RoutingIndexManager(len(data["distance_matrix"]), data["num_vehicles"], data["depot"])
     routing = pywrapcp.RoutingModel(mgr)
-
-    # fixed cost for rented vehicles
     for vid, v in enumerate(data["vehicles"]):
-        if v["type"] == "rented":
+        if v["type"]=="rented":
             routing.SetFixedCostOfVehicle(100000, vid)
 
     def dist_cb(i, j):
@@ -131,55 +131,75 @@ def solve_vrp(data):
     trips = []
     if sol:
         for vid in range(data["num_vehicles"]):
-            idx, route, load, dist_km = routing.Start(vid), [], 0, 0
+            idx, route, load = routing.Start(vid), [], 0
             while not routing.IsEnd(idx):
                 node = mgr.IndexToNode(idx)
                 if node != 0:
                     route.append(data["pod_names"][node])
                 load += data["demands"][node]
                 prev, idx = idx, sol.Value(routing.NextVar(idx))
-                if not routing.IsEnd(idx):
-                    dist_km += data["km_matrix"][mgr.IndexToNode(prev)][mgr.IndexToNode(idx)]
             if route:
                 trips.append({
                     "vehicle_id": vid,
                     "vehicle": data["vehicles"][vid],
                     "route": route,
                     "load": load,
-                    "distance": dist_km,
                     "label": data["truck_trip_labels"][vid]
                 })
     return trips
+
+def format_time(mins):
+    h = int(mins // 60)
+    m = int(mins % 60)
+    return f"{h}h {m}m" if h else f"{m}m"
 
 if run_optim:
     data  = create_data_model()
     trips = solve_vrp(data)
     output = []
+
     for trip in trips:
+        # compute full distance including return
+        stops = [depot] + trip["route"] + [depot]
+        dist_total = 0
+        for i in range(len(stops)-1):
+            a = data["pod_names"].index(stops[i])
+            b = data["pod_names"].index(stops[i+1])
+            dist_total += data["km_matrix"][a][b]
+
+        # timing calculations
+        travel_min  = dist_total / data["avg_speed"] * 60
+        service_min = len(trip["route"]) * 15 + trip["load"] * 0.5
+        total_min   = travel_min + service_min
+
+        # cost calculations
         v = trip["vehicle"]
         is_r = (v["type"] == "rented")
-        rent_cost = 2300 if is_r and trip["distance"] > 30 else (1500 if is_r else 0)
-        fuel_cost = (trip["distance"] / data["mileage"]) * data["petrol_price"] if not is_r else 0
-        total = round(rent_cost + fuel_cost, 2)
+        rent_cost = 2300 if is_r and dist_total > 30 else (1500 if is_r else 0)
+        fuel_cost = (dist_total / data["mileage"]) * data["petrol_price"] if not is_r else 0
+        total_cost = round(rent_cost + fuel_cost, 2)
 
+        # human-friendly route
         parts = []
         for i, stop in enumerate(trip["route"]):
-            real = data["pod_mapping"].get(stop, stop)
+            real   = data["pod_mapping"].get(stop, stop)
             crates = data["demands"][data["pod_names"].index(stop)]
             parts.append(f"{i+1}-{real} ({crates})")
         route_str = " -> ".join(parts)
 
         output.append({
-            "truck":     v["name"],
-            "trip":      trip.get("trip", 1),
-            "label":     trip["label"],
-            "type":      v["type"],
-            "route":     route_str,
-            "load":      trip["load"],
-            "distance":  round(trip["distance"], 2),
-            "fuel_cost": round(fuel_cost, 2),
-            "rent_cost": rent_cost,
-            "total_cost": total,
+            "truck":       v["name"],
+            "trip":        v.get("trip",1),
+            "label":       trip["label"],
+            "route":       route_str,
+            "load":        trip["load"],
+            "distance_km": round(dist_total,2),
+            "travel_time": format_time(travel_min),
+            "service_time":format_time(service_min),
+            "total_time":  format_time(total_min),
+            "fuel_cost":   round(fuel_cost,2),
+            "rent_cost":   rent_cost,
+            "total_cost":  total_cost,
         })
 
     df_out = pd.DataFrame(output)
@@ -192,35 +212,32 @@ if run_optim:
 # --- DISPLAY RESULTS ---
 if (
     'vrp_df_output' in st.session_state
-    and st.session_state['vrp_df_output'] is not None
     and not st.session_state['vrp_df_output'].empty
 ):
     df_output   = st.session_state['vrp_df_output']
     trips       = st.session_state['vrp_trips']
-    trip_labels = st.session_state['vrp_trip_labels']
+    labels      = st.session_state['vrp_trip_labels']
     data        = st.session_state['vrp_data']
 
-    st.header("Optimized Trip Plan (Smart Split)")
+    st.header("Optimized Trip Plan (with Timing)")
     st.dataframe(df_output)
 
-    sel = st.selectbox("Select truck/trip to show its route:", trip_labels)
-    idx = trip_labels.index(sel)
+    sel = st.selectbox("Select truck/trip to view:", labels)
+    idx = labels.index(sel)
     trip = trips[idx]
 
     stops = [depot] + trip["route"] + [depot]
-    coords = [coords_dict[data["pod_mapping"].get(pt, pt)] for pt in stops]
+    coords = [coords_dict[data["pod_mapping"].get(pt,pt)] for pt in stops]
 
     m = folium.Map(location=coords_dict[depot][::-1], zoom_start=12)
     try:
         resp = ors_client.directions(coordinates=coords, profile='driving-hgv', format='geojson')
-        folium.GeoJson(
-            resp['features'][0]['geometry'],
-            style_function=lambda x: {'color':'blue','weight':6,'opacity':0.85}
-        ).add_to(m)
+        folium.GeoJson(resp['features'][0]['geometry'],
+                       style_function=lambda x:{'color':'blue','weight':6,'opacity':0.85}
+                      ).add_to(m)
     except Exception as e:
         st.warning(f"Couldn’t plot real route: {e}")
 
-    # place markers with name + crate count on hover
     for pt, coord in zip(stops, coords):
         if pt == depot:
             label = f"{depot} (Depot, 0 crates)"

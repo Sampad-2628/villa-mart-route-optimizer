@@ -37,7 +37,7 @@ st.header("1. Crate Demand")
 user_crate_demand = {}
 total_crates = 0
 for store in store_list[:-1]:
-    val = st.number_input(f"{store}", min_value=0, max_value=3000, value=10)  # Increased max_value for higher demands
+    val = st.number_input(f"{store}", min_value=0, max_value=3000, value=10)  # High upper limit for demand
     user_crate_demand[store] = val
     total_crates += val
 st.write(f"**Total crates:** {total_crates}")
@@ -61,18 +61,26 @@ def create_data_model():
     for store in store_list[:-1]:
         d = user_crate_demand[store]
         if d > max_cap:
+            # Only split if necessary, and split as little as possible
             full, rem = divmod(d, max_cap)
             for i in range(full):
                 n = f"{store}__part{i+1}"
-                pod_expanded.append(n); pod_mapping[n]=store
-                pod_demands.append(max_cap); pod_coords.append(coords_dict[store])
+                pod_expanded.append(n)
+                pod_mapping[n] = store
+                pod_demands.append(max_cap)
+                pod_coords.append(coords_dict[store])
             if rem:
                 n = f"{store}__part{full+1}"
-                pod_expanded.append(n); pod_mapping[n]=store
-                pod_demands.append(rem);    pod_coords.append(coords_dict[store])
+                pod_expanded.append(n)
+                pod_mapping[n] = store
+                pod_demands.append(rem)
+                pod_coords.append(coords_dict[store])
         else:
-            pod_expanded.append(store); pod_mapping[store]=store
-            pod_demands.append(d);       pod_coords.append(coords_dict[store])
+            # No split, keep as a single stop
+            pod_expanded.append(store)
+            pod_mapping[store] = store
+            pod_demands.append(d)
+            pod_coords.append(coords_dict[store])
 
     all_pts = [depot] + pod_expanded
     km_mat  = []
@@ -153,7 +161,8 @@ def solve_vrp(data):
     routing.AddDimensionWithVehicleCapacity(d_idx, 0, data["vehicle_capacities"], True, "Capacity")
 
     params = pywrapcp.DefaultRoutingSearchParameters()
-    params.time_limit.seconds = 30
+    params.time_limit.seconds = 120   # Increased for heavy problems
+    params.solution_limit = 1_000_000 # Aggressive
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
 
@@ -176,6 +185,9 @@ def solve_vrp(data):
                     "load":        load,
                     "label":       data["truck_trip_labels"][vid]
                 })
+    else:
+        st.error("No feasible route found! Your crate demand may be too high for the total truck rounds/capacities allowed. "
+                 "Try increasing rented trips, truck capacity, or reduce demand.")
     return trips
 
 def format_time(mins):
@@ -186,6 +198,9 @@ def format_time(mins):
 if run_optim:
     data   = create_data_model()
     trips  = solve_vrp(data)
+    if not trips:
+        st.stop()  # Don't proceed if no solution
+
     output = []
     for trip in trips:
         # compute total km including return

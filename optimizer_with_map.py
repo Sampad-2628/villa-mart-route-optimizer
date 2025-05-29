@@ -37,7 +37,7 @@ st.header("1. Crate Demand")
 user_crate_demand = {}
 total_crates = 0
 for store in store_list[:-1]:
-    val = st.number_input(f"{store}", min_value=0, max_value=300, value=10)
+    val = st.number_input(f"{store}", min_value=0, max_value=3000, value=10)  # Increased max_value for higher demands
     user_crate_demand[store] = val
     total_crates += val
 st.write(f"**Total crates:** {total_crates}")
@@ -47,7 +47,7 @@ own_truck_a = {"name": "Truck A", "capacity": 121, "max_trips": 2}
 own_truck_b = {"name": "Truck B", "capacity": 90,  "max_trips": 2}
 own_trucks = [own_truck_a, own_truck_b]
 rent_capacity    = st.number_input("Rented truck capacity (crates)", 70, 300, 121)
-max_rented_trips = st.number_input("Max rented trips allowed", 0, 10, 5)
+max_rented_trips = st.number_input("Max rented trips allowed", 0, 20, 10)
 petrol_price     = st.number_input("Petrol price (₹/litre)", 0, 1000, 101)
 mileage          = 12.0  # fixed for all trucks
 avg_speed        = st.number_input("Average truck speed (km/hr)", 30, 200, 70)
@@ -81,14 +81,43 @@ def create_data_model():
         row = [df_distance.loc[src_actual, pod_mapping.get(dst, dst)] for dst in all_pts]
         km_mat.append(row)
 
+    # --- Improved Dynamic Truck Rounds Logic ---
     vehicles, labels = [], []
+    demand_left = sum(user_crate_demand.values())
+
+    # Fill owned trucks first (all rounds)
     for t in own_trucks:
         for trip in range(t["max_trips"]):
-            vehicles.append({"type":"own","name":t["name"],"capacity":t["capacity"],"trip":trip+1})
+            if demand_left <= 0:
+                break
+            vehicles.append({
+                "type": "own",
+                "name": t["name"],
+                "capacity": t["capacity"],
+                "trip": trip + 1
+            })
             labels.append(f"{t['name']} - Trip {trip+1}")
-    for i in range(max_rented_trips):
-        vehicles.append({"type":"rented","name":f"Rented-{i+1}","capacity":rent_capacity,"trip":1})
-        labels.append(f"Rented-{i+1}")
+            demand_left -= t["capacity"]
+
+    # Fill with rented trucks (one trip per rental) if needed
+    rented_needed = 0
+    while demand_left > 0 and rented_needed < max_rented_trips:
+        vehicles.append({
+            "type": "rented",
+            "name": f"Rented-{rented_needed+1}",
+            "capacity": rent_capacity,
+            "trip": 1
+        })
+        labels.append(f"Rented-{rented_needed+1}")
+        demand_left -= rent_capacity
+        rented_needed += 1
+
+    # Warn if demand still left after all rounds/trucks
+    if demand_left > 0:
+        st.warning(
+            f"Warning: Even after using all available truck rounds, {demand_left} crates remain unplanned. "
+            "Increase 'Max rented trips allowed' or truck capacities to cover all demand."
+        )
 
     return {
         "distance_matrix": km_mat,
